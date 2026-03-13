@@ -1,0 +1,71 @@
+name: Deploy Demo to GitHub Pages
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: wasm-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
+          restore-keys: wasm-
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM
+        run: wasm-pack build --target web --out-dir ts-wrapper/wasm-pkg
+
+      - name: Assemble site
+        run: |
+          mkdir -p _site/demo _site/ts-wrapper/wasm-pkg
+          cp demo/index.html demo/app.js demo/styles.css demo/search-worker.js _site/demo/
+          cp ts-wrapper/wasm-pkg/wzlib_rs.js ts-wrapper/wasm-pkg/wzlib_rs_bg.wasm _site/ts-wrapper/wasm-pkg/
+          # Root redirect to demo/
+          cat > _site/index.html << 'REDIRECT'
+          <!DOCTYPE html>
+          <meta charset="UTF-8">
+          <meta http-equiv="refresh" content="0;url=demo/">
+          <a href="demo/">Open demo</a>
+          REDIRECT
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>wzlib demo</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28'>🍁</text></svg>">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <div id="loading-text">Loading WASM module...</div>
+</div>
+
+<header>
+  <h1>wzlib-rs</h1>
+  <span class="info">WZ File Explorer</span>
+  <select id="version-select">
+    <option value="auto" selected>Auto Detect</option>
+    <option value="gms">GMS</option>
+    <option value="ems">EMS / MSEA</option>
+    <option value="bms">BMS / Classic</option>
+  </select>
+</header>
+
+<div id="drop-zone">
+  <svg viewBox="0 0 24 24"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
+  <p>Drop a <strong>.wz</strong> or <strong>.ms</strong> file here</p>
+  <p class="hint">or click to browse</p>
+  <input type="file" id="file-input" accept=".wz,.ms" style="display:none">
+</div>
+
+<div id="main">
+  <div id="sidebar">
+    <div id="sidebar-header">
+      <span class="file-name" id="file-name">—</span>
+      <span class="file-stats" id="file-stats"></span>
+    </div>
+    <input type="text" id="search-box" placeholder="Search nodes...">
+    <div id="tree-container"></div>
+  </div>
+  <div id="detail">
+    <div id="detail-empty">Select a node from the tree</div>
+    <div id="detail-content" style="display:none"></div>
+  </div>
+</div>
+
+<div id="status-bar">
+  <span id="status-wasm">WASM: loading...</span>
+  <span id="status-file">No file loaded</span>
+  <span id="status-parse"></span>
+</div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

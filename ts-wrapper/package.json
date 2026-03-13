@@ -1,0 +1,24 @@
+{
+  "name": "wzlib",
+  "version": "0.1.0",
+  "description": "TypeScript wrapper for wzlib-rs WASM — parse MapleStory WZ files on the web",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build:wasm": "cd .. && wasm-pack build --target web --out-dir ts-wrapper/wasm-pkg",
+    "build:ts": "tsc",
+    "build": "npm run build:wasm && npm run build:ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "files": [
+    "dist",
+    "wasm-pkg"
+  ],
+  "devDependencies": {
+    "prettier": "^3.8.1",
+    "typescript": "^5.7.0"
+  }
+}
