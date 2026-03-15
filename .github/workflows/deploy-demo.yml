@@ -43,8 +43,9 @@ jobs:
 
       - name: Assemble site
         run: |
-          mkdir -p _site/demo _site/ts-wrapper/wasm-pkg
-          cp demo/index.html demo/app.js demo/styles.css demo/search-worker.js _site/demo/
+          mkdir -p _site/demo/js _site/ts-wrapper/wasm-pkg
+          cp demo/index.html demo/styles.css _site/demo/
+          cp demo/js/*.js _site/demo/js/
           cp ts-wrapper/wasm-pkg/wzlib_rs.js ts-wrapper/wasm-pkg/wzlib_rs_bg.wasm _site/ts-wrapper/wasm-pkg/
           # Root redirect to demo/
           cat > _site/index.html << 'REDIRECT'

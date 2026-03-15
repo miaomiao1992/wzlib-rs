@@ -46,8 +46,8 @@ The demo uses the WASM module directly (no bundler):
 
 ```
 index.html  ─── styles.css
-  └── app.js
-        ├── imports from ../ts-wrapper/wasm-pkg/wzlib_rs.js
+  └── js/app.js
+        ├── imports from ../../ts-wrapper/wasm-pkg/wzlib_rs.js
         │     └── loads wzlib_rs_bg.wasm (~100KB)
         │
         ├── parseWzFile()      → directory tree JSON
@@ -64,8 +64,17 @@ All parsing and decoding happens in WASM. The JS layer handles UI rendering and 
 |---|---|
 | `index.html` | Page structure — links CSS and JS |
 | `styles.css` | All styles for the demo UI |
-| `app.js` | Application logic — WASM integration, tree rendering, canvas/sound/animation |
 | `serve.mjs` | Zero-dependency Node.js HTTP server with WASM MIME support |
+| `js/app.js` | Entry point — WASM init, drag/drop, tree filter |
+| `js/state.js` | Shared mutable state, caches, DOM refs |
+| `js/utils.js` | Pure helpers — `formatBytes`, `escapeHtml`, etc. |
+| `js/file-handlers.js` | File type detection, parsing, state finalization |
+| `js/tree-view.js` | Directory/list/hotfix/MS tree rendering, node selection |
+| `js/property-view.js` | Property tree rendering, IMG/MS image opening |
+| `js/media.js` | Canvas preview, sound player, video download, animation player |
+| `js/search.js` | Property search editor, web worker communication |
+| `js/search-worker.js` | Background search indexing worker |
+| `js/wasm-dispatch.js` | Routes decode/extract calls to WZ vs MS vs hotfix APIs |
 
 ## Notes
 
