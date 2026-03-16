@@ -268,6 +268,7 @@ impl<R: Read + Seek> WzBinaryReader<R> {
 mod tests {
     use super::*;
     use crate::wz::test_utils::*;
+    use std::io::Cursor;
 
     // ── Compressed int (existing) ──────────────────────────────────
 
@@ -444,6 +445,35 @@ mod tests {
     }
 
     // ── WZ offset decryption ───────────────────────────────────────
+
+    // ── read_string_at_offset ─────────────────────────────────────
+
+    #[test]
+    fn test_read_string_at_offset() {
+        let encoded = encode_wz_ascii("TargetString");
+        let mut data = vec![0u8; 20];
+        data.extend_from_slice(&encoded);
+        data.extend_from_slice(&[0u8; 10]); // trailing padding
+
+        let mut reader = make_reader(data);
+        reader.seek(5).unwrap();
+        let result = reader.read_string_at_offset(20).unwrap();
+        assert_eq!(result, "TargetString");
+        // Position restored
+        assert_eq!(reader.position().unwrap(), 5);
+    }
+
+    #[test]
+    fn test_read_string_at_offset_with_start_offset() {
+        // String at buffer position 10. start_offset=5, so caller passes offset=15.
+        let encoded = encode_wz_ascii("Offset");
+        let mut data = vec![0u8; 10];
+        data.extend_from_slice(&encoded);
+        let header = dummy_header(data.len() as u64);
+        let mut reader = WzBinaryReader::new(Cursor::new(data), [0; 4], header, 5);
+        let result = reader.read_string_at_offset(15).unwrap();
+        assert_eq!(result, "Offset");
+    }
 
     #[test]
     fn test_read_wz_offset_deterministic() {

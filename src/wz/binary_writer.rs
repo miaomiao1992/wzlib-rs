@@ -232,7 +232,8 @@ impl<W: Write + Seek> WzBinaryWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wz::test_utils::{dummy_header, make_reader};
+    use crate::wz::test_utils::{dummy_header, make_reader, make_reader_with_header};
+    use crate::wz::header::WzHeader;
     use std::io::Cursor;
 
     fn make_writer() -> WzBinaryWriter<Cursor<Vec<u8>>> {
@@ -333,5 +334,131 @@ mod tests {
         writer.write_null_terminated_string("").unwrap();
         let data = finish_writer(writer);
         assert_eq!(&data, &[0]);
+    }
+
+    // ── write_wz_offset roundtrip ────────────────────────────────
+
+    #[test]
+    fn test_write_wz_offset_roundtrip() {
+        let mut writer = make_writer();
+        let desired: u32 = 1000;
+        writer.write_wz_offset(desired).unwrap();
+        let data = finish_writer(writer);
+
+        let mut reader = make_reader(data);
+        let result = reader.read_wz_offset().unwrap();
+        assert_eq!(result, desired as u64);
+    }
+
+    #[test]
+    fn test_write_wz_offset_roundtrip_with_hash() {
+        let data_start: u32 = 60;
+        let hash: u32 = 713421;
+        let desired: u32 = 200;
+
+        let header = WzHeader {
+            ident: String::new(),
+            file_size: 256,
+            data_start,
+            copyright: String::new(),
+        };
+        let mut writer = WzBinaryWriter::new(Cursor::new(vec![0u8; 256]), [0; 4], header);
+        writer.hash = hash;
+        writer.seek(data_start as u64).unwrap();
+        writer.write_wz_offset(desired).unwrap();
+        let data = writer.writer.into_inner();
+
+        let mut reader = make_reader_with_header(data, data_start, 256);
+        reader.hash = hash;
+        reader.seek(data_start as u64).unwrap();
+        let result = reader.read_wz_offset().unwrap();
+        assert_eq!(result, desired as u64);
+    }
+
+    #[test]
+    fn test_write_wz_offset_position_dependent() {
+        let hash: u32 = 12345;
+        let desired: u32 = 500;
+
+        // Write at position 0
+        let mut w1 = make_writer();
+        w1.hash = hash;
+        w1.write_wz_offset(desired).unwrap();
+        let data1 = finish_writer(w1);
+
+        // Write at position 8
+        let header = dummy_header(256);
+        let mut w2 = WzBinaryWriter::new(Cursor::new(vec![0u8; 256]), [0; 4], header);
+        w2.hash = hash;
+        w2.seek(8).unwrap();
+        w2.write_wz_offset(desired).unwrap();
+        let data2 = w2.writer.into_inner();
+
+        // Different positions → different ciphertext
+        assert_ne!(&data1[0..4], &data2[8..12]);
+
+        // Both decrypt correctly
+        let mut r1 = make_reader(data1);
+        r1.hash = hash;
+        assert_eq!(r1.read_wz_offset().unwrap(), desired as u64);
+
+        let mut r2 = make_reader(data2);
+        r2.hash = hash;
+        r2.seek(8).unwrap();
+        assert_eq!(r2.read_wz_offset().unwrap(), desired as u64);
+    }
+
+    // ── Compressed int/long roundtrip ────────────────────────────
+
+    #[test]
+    fn test_write_compressed_int_roundtrip() {
+        for &val in &[0, 1, -1, 127, -127, 128, -128, i32::MAX, i32::MIN] {
+            let mut writer = make_writer();
+            writer.write_compressed_int(val).unwrap();
+            let data = finish_writer(writer);
+            let mut reader = make_reader(data);
+            assert_eq!(reader.read_compressed_int().unwrap(), val, "Failed for {}", val);
+        }
+    }
+
+    #[test]
+    fn test_write_compressed_long_roundtrip() {
+        for &val in &[0i64, 1, -1, 127, -127, 128, -128, i64::MAX, i64::MIN] {
+            let mut writer = make_writer();
+            writer.write_compressed_long(val).unwrap();
+            let data = finish_writer(writer);
+            let mut reader = make_reader(data);
+            assert_eq!(reader.read_compressed_long().unwrap(), val, "Failed for {}", val);
+        }
+    }
+
+    // ── WZ string roundtrip ─────────────────────────────────────
+
+    #[test]
+    fn test_write_wz_string_ascii_roundtrip() {
+        // Short ASCII
+        let mut writer = make_writer();
+        writer.write_wz_string("Hello").unwrap();
+        let data = finish_writer(writer);
+        let mut reader = make_reader(data);
+        assert_eq!(reader.read_wz_string().unwrap(), "Hello");
+
+        // Long ASCII (>127 chars, triggers 0x80 + i32 length encoding)
+        let long_str: String = "B".repeat(200);
+        let mut writer = make_writer();
+        writer.write_wz_string(&long_str).unwrap();
+        let data = finish_writer(writer);
+        let mut reader = make_reader(data);
+        assert_eq!(reader.read_wz_string().unwrap(), long_str);
+    }
+
+    #[test]
+    fn test_write_wz_string_unicode_roundtrip() {
+        let unicode_str = "\u{AC00}\u{B098}\u{B2E4}"; // Korean "가나다"
+        let mut writer = make_writer();
+        writer.write_wz_string(unicode_str).unwrap();
+        let data = finish_writer(writer);
+        let mut reader = make_reader(data);
+        assert_eq!(reader.read_wz_string().unwrap(), unicode_str);
     }
 }

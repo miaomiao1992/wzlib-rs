@@ -224,4 +224,64 @@ mod tests {
         dec.process(&mut data);
         assert_eq!(data, original);
     }
+
+    #[test]
+    fn test_roundtrip_32byte_key() {
+        let key = [0x42u8; 32];
+        let iv = [0x01, 0x02, 0x03, 0x04];
+        let original = b"Hello, Snow2 cipher test data!!!".to_vec();
+        let mut data = original.clone();
+
+        Snow2::new(&key, &iv, true).process(&mut data);
+        assert_ne!(data, original);
+        Snow2::new(&key, &iv, false).process(&mut data);
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn test_roundtrip_no_iv() {
+        let key = [0x42u8; 16];
+        let original = b"Test data without IV provided!!!".to_vec();
+        let mut data = original.clone();
+
+        Snow2::new(&key, &[], true).process(&mut data);
+        assert_ne!(data, original);
+        Snow2::new(&key, &[], false).process(&mut data);
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn test_process_partial_buffer() {
+        let key = [0x55u8; 16];
+        let iv = [0x01, 0x02, 0x03, 0x04];
+
+        for len in [1, 2, 3, 5, 6, 7] {
+            let original: Vec<u8> = (0..len).map(|i| i as u8).collect();
+            let mut data = original.clone();
+            Snow2::new(&key, &iv, true).process(&mut data);
+            Snow2::new(&key, &iv, false).process(&mut data);
+            assert_eq!(data, original, "Failed for len={}", len);
+        }
+    }
+
+    #[test]
+    fn test_process_empty_data() {
+        let key = [0x42u8; 16];
+        let iv = [0x01, 0x02, 0x03, 0x04];
+        let mut data: Vec<u8> = vec![];
+        Snow2::new(&key, &iv, true).process(&mut data);
+        assert!(data.is_empty());
+    }
+
+    #[test]
+    fn test_determinism() {
+        let key = [0x42u8; 16];
+        let iv = [0x01, 0x02, 0x03, 0x04];
+        let original = b"Determinism verification test!!!!".to_vec();
+        let mut data1 = original.clone();
+        let mut data2 = original.clone();
+        Snow2::new(&key, &iv, true).process(&mut data1);
+        Snow2::new(&key, &iv, true).process(&mut data2);
+        assert_eq!(data1, data2);
+    }
 }
