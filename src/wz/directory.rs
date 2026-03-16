@@ -3,6 +3,8 @@
 //! A WZ file contains a tree of directories and images.
 //! Each directory entry has a type (1-4), name, size, checksum, and offset.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 use super::binary_reader::WzBinaryReader;
@@ -195,25 +197,52 @@ impl WzDirectoryEntry {
             subdir.generate_data(iv, image_data_buf)?;
         }
 
-        self.offset_size = self.measure_entry_table_size();
-
         Ok(())
     }
 
-    fn measure_entry_table_size(&self) -> u32 {
+    fn measure_entry_table_size(&self, string_cache: &mut HashSet<String>) -> u32 {
         let entry_count = self.images.len() + self.subdirectories.len();
         let mut size = compressed_int_size(entry_count as i32);
 
         for img in &self.images {
-            // type(1) + name_str + compressed_int(size) + compressed_int(checksum) + offset(4)
-            size += 1 + wz_string_size(&img.name) + compressed_int_size(img.size)
+            let cache_key = format!("{}_{}", WzDirectoryType::Image as u8, img.name);
+            let name_size = if string_cache.contains(&cache_key) {
+                // 0x02 (RetrieveStringFromOffset) + i32 offset
+                5
+            } else {
+                string_cache.insert(cache_key);
+                // entry_type(1) + wz_string(name)
+                1 + wz_string_size(&img.name)
+            };
+            size += name_size + compressed_int_size(img.size)
                 + compressed_int_size(img.checksum) + 4;
         }
         for dir in &self.subdirectories {
-            size += 1 + wz_string_size(&dir.name) + compressed_int_size(dir.size)
+            let cache_key = format!("{}_{}", WzDirectoryType::Directory as u8, dir.name);
+            let name_size = if string_cache.contains(&cache_key) {
+                5
+            } else {
+                string_cache.insert(cache_key);
+                1 + wz_string_size(&dir.name)
+            };
+            size += name_size + compressed_int_size(dir.size)
                 + compressed_int_size(dir.checksum) + 4;
         }
         size as u32
+    }
+
+    /// Computes `offset_size` for every directory in the tree, simulating
+    /// the same string-caching order as `save_directory()`.
+    pub fn compute_all_offset_sizes(&mut self) {
+        let mut cache = HashSet::new();
+        self.compute_offset_sizes_recursive(&mut cache);
+    }
+
+    fn compute_offset_sizes_recursive(&mut self, cache: &mut HashSet<String>) {
+        self.offset_size = self.measure_entry_table_size(cache);
+        for subdir in &mut self.subdirectories {
+            subdir.compute_offset_sizes_recursive(cache);
+        }
     }
 
     // Phase 2a of three-phase save
@@ -266,6 +295,25 @@ impl WzDirectoryEntry {
         }
 
         Ok(())
+    }
+
+    // Expects blobs in depth-first order: images first, then subdirectories.
+    pub fn attach_image_data(&mut self, blobs: &[&[u8]]) -> WzResult<usize> {
+        let mut consumed = 0;
+        for img in &mut self.images {
+            if consumed >= blobs.len() {
+                return Err(super::error::WzError::Custom(
+                    "Not enough image blobs for directory tree".into(),
+                ));
+            }
+            img.checksum = compute_image_checksum(blobs[consumed]);
+            img.size = blobs[consumed].len() as i32;
+            consumed += 1;
+        }
+        for subdir in &mut self.subdirectories {
+            consumed += subdir.attach_image_data(&blobs[consumed..])?;
+        }
+        Ok(consumed)
     }
 }
 
@@ -505,6 +553,56 @@ mod tests {
         data.push(0x05); // invalid type
         let mut reader = make_reader(data);
         assert!(WzDirectoryEntry::parse(&mut reader).is_err());
+    }
+
+    // ── compute_all_offset_sizes with string caching ──────────────
+
+    #[test]
+    fn test_offset_sizes_account_for_string_caching() {
+        use crate::wz::binary_writer::WzBinaryWriter;
+        use crate::wz::header::WzHeader;
+        use std::io::Cursor;
+
+        // Two subdirectories each containing an image named "0.img".
+        // The second occurrence should be cached (5 bytes) instead of inline (1 + 1 + 5 = 7 bytes).
+        let mut root = WzDirectoryEntry::new(String::new(), WzDirectoryType::Directory as u8);
+
+        let mut sub_a = WzDirectoryEntry::new("a".into(), WzDirectoryType::Directory as u8);
+        sub_a.images.push(WzImageEntry {
+            name: "0.img".into(), size: 100, checksum: 10, offset: 0, properties: None, iv: None,
+        });
+
+        let mut sub_b = WzDirectoryEntry::new("b".into(), WzDirectoryType::Directory as u8);
+        sub_b.images.push(WzImageEntry {
+            name: "0.img".into(), size: 200, checksum: 20, offset: 0, properties: None, iv: None,
+        });
+
+        root.subdirectories.push(sub_a);
+        root.subdirectories.push(sub_b);
+
+        root.compute_all_offset_sizes();
+
+        // Verify by doing an actual write and comparing sizes
+        let header = WzHeader { ident: String::new(), file_size: 0, data_start: 0, copyright: String::new() };
+        let mut writer = WzBinaryWriter::new(Cursor::new(Vec::new()), [0; 4], header);
+
+        // Set dummy offsets so write_wz_offset doesn't panic
+        root.offset = 0;
+        root.subdirectories[0].offset = root.offset_size as u64;
+        root.subdirectories[1].offset = root.subdirectories[0].offset
+            + root.subdirectories[0].offset_size as u64;
+
+        for img in &mut root.subdirectories[0].images { img.offset = 1000; }
+        for img in &mut root.subdirectories[1].images { img.offset = 2000; }
+
+        root.save_directory(&mut writer).unwrap();
+        let actual_size = writer.position().unwrap() as u32;
+
+        let expected = root.offset_size
+            + root.subdirectories[0].offset_size
+            + root.subdirectories[1].offset_size;
+        assert_eq!(actual_size, expected,
+            "Measured size ({}) must match actual written size ({})", expected, actual_size);
     }
 
     // ── Failed subdirectory parse still includes the entry ──────────

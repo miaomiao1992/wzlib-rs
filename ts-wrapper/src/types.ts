@@ -70,6 +70,18 @@ export interface WzPropertyNode {
   // Video
   videoType?: number;
   mcv?: McvHeaderInfo;
+  blobIndex?: number;
+}
+
+export interface EditableImage {
+  /** Same format as parseWzImage, but with `blobIndex` fields referencing `blobs`. */
+  properties: WzPropertyNode[];
+  blobs: Uint8Array[];
+}
+
+export interface MsBuildEntry {
+  name: string;
+  entryKey: number[]; // 16-byte random key
 }
 
 /** Entry metadata from a parsed .ms file. */
@@ -85,13 +97,6 @@ export interface MsParsedResult {
   entryCount: number;
   salt: string;
   entries: MsEntryInfo[];
-}
-
-/** Entry data for saving a .ms file. */
-export interface MsSaveEntry {
-  name: string;
-  image_data: number[]; // serialized WZ image bytes
-  entry_key: number[]; // 16-byte random key
 }
 
 /** Functions exported by the wasm-pack generated WASM module. */
@@ -165,27 +170,55 @@ export interface WasmExports {
     entryIndex: number,
     propPath: string,
   ): Uint8Array;
-  serializeWzImage(propertiesJson: string, versionName: string, customIv?: Uint8Array): Uint8Array;
   encryptMsEntry(
     data: Uint8Array,
     salt: string,
     entryName: string,
     entryKey: Uint8Array,
   ): Uint8Array;
-  saveWzFile(data: Uint8Array, versionName: string, customIv?: Uint8Array): Uint8Array;
-  saveHotfixDataWz(data: Uint8Array, versionName: string, customIv?: Uint8Array): Uint8Array;
-  saveMsFile(data: Uint8Array, fileName: string): Uint8Array;
-  saveWzImage(
-    wzData: Uint8Array,
+  // ── Encoding ──────────────────────────────────────────────────────
+  encodePixels(rgba: Uint8Array, width: number, height: number, formatId: number): Uint8Array;
+  compressPngData(raw: Uint8Array): Uint8Array;
+
+  // ── Edit-friendly parsing (returns packed: json + binary blobs) ───
+  parseWzImageForEdit(
+    data: Uint8Array,
     versionName: string,
     imgOffset: number,
+    imgSize: number,
     versionHash: number,
     customIv?: Uint8Array,
   ): Uint8Array;
-  saveMsImage(
+  parseHotfixForEdit(
+    data: Uint8Array,
+    versionName: string,
+    customIv?: Uint8Array,
+  ): Uint8Array;
+  parseMsImageForEdit(
     data: Uint8Array,
     fileName: string,
     entryIndex: number,
+  ): Uint8Array;
+
+  // ── Building from modified state ──────────────────────────────────
+  buildWzImage(
+    propertiesJson: string,
+    blobs: Uint8Array,
+    versionName: string,
     customIv?: Uint8Array,
+  ): Uint8Array;
+  buildWzFile(
+    directoryJson: string,
+    imageBlobs: Uint8Array,
+    version: number,
+    versionName: string,
+    is64bit: boolean,
+    customIv?: Uint8Array,
+  ): Uint8Array;
+  buildMsFile(
+    fileName: string,
+    salt: string,
+    entriesJson: string,
+    imageBlobs: Uint8Array,
   ): Uint8Array;
 }

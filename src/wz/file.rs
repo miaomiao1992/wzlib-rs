@@ -149,16 +149,17 @@ impl WzFile {
     pub fn save(&mut self) -> WzResult<Vec<u8>> {
         let mut image_data_buf = Vec::new();
         self.directory.generate_data(self.iv, &mut image_data_buf)?;
-        self.save_with_image_data(image_data_buf)
+        self.save_with_image_data(&[&image_data_buf])
     }
 
     /// Phases 2–3: compute offsets and write the final WZ file.
-    /// `image_data_buf` must already contain all serialized image data
+    /// `image_data` slices must be in depth-first traversal order matching the directory,
     /// and each image's `size`/`checksum` must be set.
-    fn save_with_image_data(&mut self, image_data_buf: Vec<u8>) -> WzResult<Vec<u8>> {
+    pub fn save_with_image_data(&mut self, image_data: &[&[u8]]) -> WzResult<Vec<u8>> {
         let iv = self.iv;
 
         // Phase 2: Compute offsets
+        self.directory.compute_all_offset_sizes();
         let enc_ver_size = if self.is_64bit { 0u32 } else { 2 };
         let dir_start = self.header.data_start + enc_ver_size;
         let after_dir = self.directory.get_offsets(dir_start);
@@ -198,7 +199,9 @@ impl WzFile {
 
         let img_start = after_dir as u64;
         writer.seek(img_start)?;
-        writer.write_bytes(&image_data_buf)?;
+        for chunk in image_data {
+            writer.write_bytes(chunk)?;
+        }
 
         Ok(output)
     }
@@ -560,6 +563,86 @@ mod tests {
         assert_eq!(props[0].1.as_int(), Some(42));
         assert_eq!(props[1].0, "y");
         assert_eq!(props[1].1.as_int(), Some(7));
+    }
+
+    // ── Save with duplicate image names across subdirectories ─────
+
+    #[test]
+    fn test_wz_file_save_duplicate_names_no_gap() {
+        use crate::wz::directory::{WzDirectoryEntry, WzImageEntry};
+        use crate::wz::types::WzDirectoryType;
+
+        // Two subdirectories with identically-named images — triggers
+        // string caching in write_wz_object_value. Before the fix,
+        // measure_entry_table_size didn't account for caching, producing
+        // a gap of zero bytes between directory tables and image data.
+        let make_img = |name: &str, props: Vec<(String, WzProperty)>| WzImageEntry {
+            name: name.into(), size: 0, checksum: 0, offset: 0,
+            properties: Some(props), iv: None,
+        };
+
+        let mut sub_a = WzDirectoryEntry::new("skillA".into(), WzDirectoryType::Directory as u8);
+        sub_a.images.push(make_img("0.img", vec![("x".into(), WzProperty::Int(1))]));
+        sub_a.images.push(make_img("1.img", vec![("y".into(), WzProperty::Int(2))]));
+
+        let mut sub_b = WzDirectoryEntry::new("skillB".into(), WzDirectoryType::Directory as u8);
+        sub_b.images.push(make_img("0.img", vec![("x".into(), WzProperty::Int(3))]));
+        sub_b.images.push(make_img("1.img", vec![("y".into(), WzProperty::Int(4))]));
+
+        let mut dir = WzDirectoryEntry::new(String::new(), WzDirectoryType::Directory as u8);
+        dir.subdirectories.push(sub_a);
+        dir.subdirectories.push(sub_b);
+
+        let version = 83i16;
+        let hash = compute_version_hash(version);
+
+        let mut wz_file = WzFile {
+            header: WzHeader {
+                ident: "PKG1".into(), file_size: 0, data_start: 60,
+                copyright: String::new(),
+            },
+            version, version_hash: hash,
+            maple_version: WzMapleVersion::Bms,
+            iv: WzMapleVersion::Bms.iv(),
+            is_64bit: false,
+            directory: dir,
+        };
+
+        let saved = wz_file.save().unwrap();
+
+        // Parse back and verify all 4 images are readable
+        let parsed = WzFile::parse(&saved, WzMapleVersion::Bms, Some(83)).unwrap();
+        assert_eq!(parsed.directory.subdirectories.len(), 2);
+        assert_eq!(parsed.directory.subdirectories[0].images.len(), 2);
+        assert_eq!(parsed.directory.subdirectories[1].images.len(), 2);
+
+        let iv = WzMapleVersion::Bms.iv();
+        for sub in &parsed.directory.subdirectories {
+            for img in &sub.images {
+                let mut reader = crate::wz::binary_reader::WzBinaryReader::new(
+                    Cursor::new(&saved), iv, parsed.header.clone(), 0,
+                );
+                reader.seek(img.offset).unwrap();
+                let props = crate::wz::image::parse_image(&mut reader).unwrap();
+                assert_eq!(props.len(), 1);
+            }
+        }
+
+        // Verify no zero-byte gap: the first image should start immediately
+        // after the directory tables. Re-save to confirm identical output.
+        let mut wz2 = parsed;
+        // Re-parse all images so we have properties
+        for sub in &mut wz2.directory.subdirectories {
+            for img in &mut sub.images {
+                let mut reader = crate::wz::binary_reader::WzBinaryReader::new(
+                    Cursor::new(&saved), iv, wz2.header.clone(), 0,
+                );
+                reader.seek(img.offset).unwrap();
+                img.properties = Some(crate::wz::image::parse_image(&mut reader).unwrap());
+            }
+        }
+        let saved2 = wz2.save().unwrap();
+        assert_eq!(saved.len(), saved2.len(), "Re-save should produce identical size");
     }
 
     // ── Hybrid IV preservation ───────────────────────────────────────

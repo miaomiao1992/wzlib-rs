@@ -77,13 +77,14 @@ const msData = new Uint8Array(await fetch("Data.ms").then(r => r.arrayBuffer()))
 const entries = parser.parseMsFile(msData, "Data.ms");
 const imgTree = parser.parseMsImage(msData, "Data.ms", 0);
 
-// Save a hotfix Data.wz
-const props = [{ name: "hp", type: "Int", value: 100 }];
-const saved = parser.saveHotfixFile(props, "bms");
+// Edit and rebuild a hotfix Data.wz
+const { properties, blobs } = parser.parseHotfixForEdit(wzData, "bms");
+properties.find(p => p.name === "hp").value = 9999;
+const saved = parser.buildImage(properties, blobs, "bms");
 
-// Save a .ms file
-const msEntries = [{ name: "Mob/test.img", image_data: [...imageBytes], entry_key: [...key16] }];
-const msSaved = parser.saveMsFile("output.ms", "salt", msEntries);
+// Build a .ms file from entries
+const msEntries = [{ name: "Mob/test.img", entryKey: [...key16] }];
+const msSaved = parser.buildMsFile("output.ms", "salt", msEntries, [imageBlob]);
 ```
 
 ## Architecture

@@ -32,6 +32,7 @@ function finalizeFileState(data, detectedVersion, versionHash, tree, mode = 'sta
   state.wzPatchVersion = extra.patchVersion ?? 0;
   state.wzIs64bit = extra.is64bit ?? false;
   state.currentMsEntryIndex = -1;
+  state.modifiedImages.clear();
   if (detectedVersion !== $.version.value) $.version.value = detectedVersion;
 }
 
@@ -114,6 +115,7 @@ function handleMsFile(file, data) {
   state.msFileName = file.name;
   state.msSalt = parsed.salt || '';
   state.parsedTree = null;
+  state.modifiedImages.clear();
 
   updateFileStatus(file, `${parsed.entryCount} entries`, `Parsed in ${elapsed}ms | MS archive, ${parsed.entryCount} entries`);
 

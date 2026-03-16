@@ -1,9 +1,10 @@
-//! Image decoding — DXT3/DXT5/BC7 decompression and pixel format conversion.
+//! Image decoding and encoding — pixel format conversion, DXT decompression, zlib compression.
 //!
 //! Ported from MapleLib's `PngUtility.cs` and `WzPngProperty.cs`.
-//! All decoders output RGBA8888 (4 bytes per pixel, R-G-B-A order).
+//! Decoders output RGBA8888; encoders accept RGBA8888 and produce WZ-native formats.
 
 pub mod dxt;
+pub mod encode;
 pub mod pixel;
 
 use crate::wz::error::{WzError, WzResult};

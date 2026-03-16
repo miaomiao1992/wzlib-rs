@@ -1,4 +1,6 @@
 import type {
+  EditableImage,
+  MsBuildEntry,
   MsParsedResult,
   WasmExports,
   WzDirectoryTree,
@@ -8,6 +10,56 @@ import type {
   WzPropertyNode,
 } from './types.js';
 import { WzNode, WzNodeType } from './wz-node.js';
+
+export type { EditableImage };
+
+function unpackEditResult(packed: Uint8Array): EditableImage {
+  if (packed.byteLength < 4) throw new Error('Edit result buffer too short');
+  const view = new DataView(packed.buffer, packed.byteOffset, packed.byteLength);
+  let offset = 0;
+
+  const jsonLen = view.getUint32(offset, true);
+  offset += 4;
+  if (offset + jsonLen > packed.byteLength) throw new Error('Edit result JSON extends past buffer');
+  const jsonBytes = packed.subarray(offset, offset + jsonLen);
+  offset += jsonLen;
+  const properties: WzPropertyNode[] = JSON.parse(new TextDecoder().decode(jsonBytes));
+
+  if (offset + 4 > packed.byteLength) throw new Error('Edit result blob header truncated');
+  const blobCount = view.getUint32(offset, true);
+  offset += 4;
+  const blobs: Uint8Array[] = [];
+  for (let i = 0; i < blobCount; i++) {
+    if (offset + 4 > packed.byteLength) throw new Error(`Blob ${i} header truncated`);
+    const blobLen = view.getUint32(offset, true);
+    offset += 4;
+    if (offset + blobLen > packed.byteLength) throw new Error(`Blob ${i} data extends past buffer`);
+    blobs.push(packed.slice(offset, offset + blobLen));
+    offset += blobLen;
+  }
+
+  return { properties, blobs };
+}
+
+function packBlobs(blobs: Uint8Array[]): Uint8Array {
+  let totalSize = 4;
+  for (const b of blobs) totalSize += 4 + b.byteLength;
+
+  const buf = new Uint8Array(totalSize);
+  const view = new DataView(buf.buffer);
+  let offset = 0;
+
+  view.setUint32(offset, blobs.length, true);
+  offset += 4;
+  for (const b of blobs) {
+    view.setUint32(offset, b.byteLength, true);
+    offset += 4;
+    buf.set(b, offset);
+    offset += b.byteLength;
+  }
+
+  return buf;
+}
 
 /** High-level WZ file parser wrapping the WASM module. */
 export class WzParser {
@@ -200,32 +252,6 @@ export class WzParser {
     return this.wasm.extractMsSound(data, fileName, entryIndex, propPath);
   }
 
-  // ── Save / Serialize ─────────────────────────────────────────────
-
-  /** Serialize a WZ image property tree to binary format. */
-  serializeImage(
-    properties: WzPropertyNode[],
-    version: WzMapleVersion,
-    customIv?: Uint8Array,
-  ): Uint8Array {
-    return this.wasm.serializeWzImage(JSON.stringify(properties), version, customIv);
-  }
-
-  /** Parse a standard WZ file from raw data and save through the regular flow. */
-  saveFile(data: Uint8Array, version: WzMapleVersion, customIv?: Uint8Array): Uint8Array {
-    return this.wasm.saveWzFile(data, version, customIv);
-  }
-
-  /** Parse a hotfix Data.wz from raw data and save through the regular flow. */
-  saveHotfixFile(data: Uint8Array, version: WzMapleVersion, customIv?: Uint8Array): Uint8Array {
-    return this.wasm.saveHotfixDataWz(data, version, customIv);
-  }
-
-  /** Parse a .ms file from raw data and save through the regular flow. */
-  saveMsFile(data: Uint8Array, fileName: string): Uint8Array {
-    return this.wasm.saveMsFile(data, fileName);
-  }
-
   /** Encrypt a single .ms entry's image data. */
   encryptMsEntry(
     data: Uint8Array,
@@ -236,25 +262,84 @@ export class WzParser {
     return this.wasm.encryptMsEntry(data, salt, entryName, entryKey);
   }
 
-  /** Save a single WZ image as a standalone Data.wz (hotfix format). */
-  saveImage(
-    wzData: Uint8Array,
-    version: WzMapleVersion,
-    imgOffset: number,
-    versionHash: number,
-    customIv?: Uint8Array,
-  ): Uint8Array {
-    return this.wasm.saveWzImage(wzData, version, imgOffset, versionHash, customIv);
+  // ── Encoding ──────────────────────────────────────────────────────
+
+  // Reverse of decodePixels — does not support DXT/BC formats.
+  encodePixels(rgba: Uint8Array, width: number, height: number, format: WzPngFormat): Uint8Array {
+    return this.wasm.encodePixels(rgba, width, height, format);
   }
 
-  /** Save a single .ms entry as a standalone Data.wz (hotfix format). */
-  saveMsImage(
+  compressPng(raw: Uint8Array): Uint8Array {
+    return this.wasm.compressPngData(raw);
+  }
+
+  // ── Edit-friendly parsing ─────────────────────────────────────────
+  //
+  // These return a packed buffer: [json_len:u32 LE][json][blob_count:u32][blobs...]
+  // Use `unpackEditResult()` to split into { json, blobs }.
+
+  parseImageForEdit(
+    data: Uint8Array,
+    version: WzMapleVersion,
+    imgOffset: number,
+    imgSize: number,
+    versionHash: number,
+    customIv?: Uint8Array,
+  ): EditableImage {
+    const packed = this.wasm.parseWzImageForEdit(data, version, imgOffset, imgSize, versionHash, customIv);
+    return unpackEditResult(packed);
+  }
+
+  parseHotfixForEdit(
+    data: Uint8Array,
+    version: WzMapleVersion,
+    customIv?: Uint8Array,
+  ): EditableImage {
+    const packed = this.wasm.parseHotfixForEdit(data, version, customIv);
+    return unpackEditResult(packed);
+  }
+
+  parseMsImageForEdit(
     data: Uint8Array,
     fileName: string,
     entryIndex: number,
+  ): EditableImage {
+    const packed = this.wasm.parseMsImageForEdit(data, fileName, entryIndex);
+    return unpackEditResult(packed);
+  }
+
+  // ── Building from modified state ──────────────────────────────────
+
+  buildImage(
+    properties: WzPropertyNode[],
+    blobs: Uint8Array[],
+    version: WzMapleVersion,
     customIv?: Uint8Array,
   ): Uint8Array {
-    return this.wasm.saveMsImage(data, fileName, entryIndex, customIv);
+    const packedBlobs = packBlobs(blobs);
+    return this.wasm.buildWzImage(JSON.stringify(properties), packedBlobs, version, customIv);
+  }
+
+  buildFile(
+    directory: WzDirectoryTree,
+    imageBlobs: Uint8Array[],
+    version: number,
+    versionName: WzMapleVersion,
+    is64bit: boolean,
+    customIv?: Uint8Array,
+  ): Uint8Array {
+    const packedBlobs = packBlobs(imageBlobs);
+    return this.wasm.buildWzFile(JSON.stringify(directory), packedBlobs, version, versionName, is64bit, customIv);
+  }
+
+  buildMsFile(
+    fileName: string,
+    salt: string,
+    entries: MsBuildEntry[],
+    imageBlobs: Uint8Array[],
+  ): Uint8Array {
+    const packedBlobs = packBlobs(imageBlobs);
+    return this.wasm.buildMsFile(fileName, salt, JSON.stringify(entries), packedBlobs);
   }
 
   // ── Internal ──────────────────────────────────────────────────────

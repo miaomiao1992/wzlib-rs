@@ -18,6 +18,7 @@ export const state = {
   currentAudio: null,
   currentPlayBtn: null,
   currentStopBtn: null,
+  modifiedImages: new Set(),  // image offsets that were edited (passthrough all others on save)
 };
 
 // ── Lazy property tree rendering state ───────────────────────────────

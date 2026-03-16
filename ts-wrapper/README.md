@@ -1,6 +1,6 @@
 # wzlib
 
-TypeScript wrapper for the `wzlib-rs` WASM module. Provides a high-level API for parsing and saving MapleStory WZ and MS files in the browser.
+TypeScript wrapper for the `wzlib-rs` WASM module. Provides a high-level API for parsing, editing, and saving MapleStory WZ and MS files in the browser.
 
 ## Setup
 
@@ -64,17 +64,47 @@ const parser = await WzParser.create();
 | `extractSound(data, version, imgOffset, versionHash, propPath, customIv?)`   | Extract raw sound bytes from WZ data at offset + path                  |
 | `extractVideo(data, version, imgOffset, versionHash, propPath, customIv?)`   | Extract raw video bytes from a standard WZ file                        |
 
-#### Saving & Serialization
+#### Pixel Encoding
 
-| Method                                                          | Description                                                          |
-| --------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `serializeImage(properties, version, customIv?)`                | Serialize a property tree to WZ image binary format                  |
-| `saveFile(data, version, customIv?)`                            | Parse a standard `.wz` file and re-save through the three-phase flow |
-| `saveHotfixFile(data, version, customIv?)`                      | Parse a hotfix Data.wz from raw data and re-save                     |
-| `saveMsFile(data, fileName)`                                    | Parse a `.ms` file from raw data and re-save                         |
-| `saveImage(wzData, version, imgOffset, versionHash, customIv?)` | Save a single WZ image as standalone Data.wz                         |
-| `saveMsImage(data, fileName, entryIndex, customIv?)`            | Save a single `.ms` entry as standalone Data.wz                      |
-| `encryptMsEntry(data, salt, entryName, entryKey)`               | Encrypt a single `.ms` entry's image data                            |
+| Method                              | Description                                                     |
+| ----------------------------------- | --------------------------------------------------------------- |
+| `encodePixels(rgba, w, h, format)`  | Convert RGBA8888 to a WZ pixel format (reverse of decodePixels) |
+| `compressPng(raw)`                  | Zlib-compress raw pixel data for WZ Canvas storage              |
+
+Supported encoding formats: BGRA4444, BGRA8888, ARGB1555, RGB565, R16, A8, RGBA1010102, RGBA32Float. DXT/BC formats are decode-only — use BGRA8888 (format `2`) for imported images.
+
+#### Edit-Friendly Parsing
+
+These methods return an `EditableImage` — a JSON property tree with binary data (Canvas pixels, Sound audio, etc.) separated into a `blobs[]` array. Each binary node has a `blobIndex` field referencing its blob.
+
+| Method                                                                             | Description                                       |
+| ---------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `parseImageForEdit(data, version, imgOffset, imgSize, versionHash, customIv?)`     | Parse a WZ image for editing                      |
+| `parseHotfixForEdit(data, version, customIv?)`                                     | Parse a hotfix Data.wz for editing                |
+| `parseMsImageForEdit(data, fileName, entryIndex)`                                  | Parse a `.ms` entry for editing                   |
+
+```typescript
+interface EditableImage {
+  properties: WzPropertyNode[];  // JSON tree with blobIndex references
+  blobs: Uint8Array[];           // Binary data (Canvas png_data, Sound audio, etc.)
+}
+```
+
+#### Building from Modified State
+
+After editing the JSON tree and blobs, use these methods to produce binary output.
+
+| Method                                                                  | Description                                              |
+| ----------------------------------------------------------------------- | -------------------------------------------------------- |
+| `buildImage(properties, blobs, version, customIv?)`                     | Build a serialized WZ image from modified tree + blobs   |
+| `buildFile(directory, imageBlobs, version, versionName, is64bit, customIv?)` | Build a complete `.wz` file from directory + image blobs |
+| `buildMsFile(fileName, salt, entries, imageBlobs)`                      | Build a complete `.ms` file from entries + image blobs   |
+
+#### MS Encryption Utilities
+
+| Method                                            | Description                                 |
+| ------------------------------------------------- | ------------------------------------------- |
+| `encryptMsEntry(data, salt, entryName, entryKey)` | Encrypt a single `.ms` entry's image data   |
 
 #### Key & Version Utilities
 
@@ -187,11 +217,17 @@ interface WzPropertyNode {
   height?: number; // Canvas
   format?: number; // Canvas pixel format
   dataLength?: number; // Canvas compressed data length
+  blobIndex?: number; // Edit mode: index into blobs array
   x?: number; // Vector
   y?: number; // Vector
   duration_ms?: number; // Sound
   videoType?: number; // Video
   mcv?: McvHeaderInfo; // Video (MCV container)
+}
+
+interface EditableImage {
+  properties: WzPropertyNode[];
+  blobs: Uint8Array[];
 }
 
 interface MsEntryInfo {
@@ -201,10 +237,9 @@ interface MsEntryInfo {
   entryKey: number[]; // 16-byte random key
 }
 
-interface MsSaveEntry {
+interface MsBuildEntry {
   name: string;
-  image_data: number[]; // serialized WZ image bytes
-  entry_key: number[]; // 16-byte random key
+  entryKey: number[]; // 16-byte random key
 }
 
 interface McvHeaderInfo {
@@ -233,14 +268,102 @@ ts-wrapper/
 └── tsconfig.json
 ```
 
-## Example: Render a Sprite
+## Examples
+
+### Render a Sprite
 
 ```typescript
 const parser = await WzParser.create();
-const root = parser.parseFile(wzData, 'bms');
+const wzData = new Uint8Array(await fetch('Mob.wz').then(r => r.arrayBuffer()));
 
-// Get a mob sprite
+const root = parser.parseFile(wzData, 'bms');
 const img = root.resolve('8800000.img');
-// In practice you'd use parseWzImage + decodeWzCanvas from the WASM API
-// to decode the Canvas property's compressed PNG data to RGBA pixels.
+
+// Decode a canvas from the mob sprite
+const rgba = parser.decodeWzCanvas(wzData, 'bms', img.value.offset, versionHash, '0/info/icon');
+// First 8 bytes are [width_le32, height_le32], rest is RGBA pixels
+```
+
+### Edit Properties and Save
+
+```typescript
+const parser = await WzParser.create();
+const wzData = new Uint8Array(/* ... */);
+const fileInfo = JSON.parse(parser.detectMapleVersion(wzData));
+
+// Parse an image for editing (JSON tree + binary blobs)
+const img = fileInfo.directory.images[0];
+const { properties, blobs } = parser.parseImageForEdit(
+  wzData, fileInfo.versionName, img.offset, img.size, fileInfo.versionHash
+);
+
+// Modify a property value
+const hpNode = properties.find(p => p.name === 'hp');
+hpNode.value = 9999;
+
+// Add a new string property
+properties.push({ name: 'custom', type: 'String', value: 'hello' });
+
+// Rebuild the image
+const imageBytes = parser.buildImage(properties, blobs, fileInfo.versionName);
+```
+
+### Import a PNG as a New Canvas
+
+```typescript
+// Decode a PNG to RGBA pixels using a canvas element
+const img = new Image();
+img.src = URL.createObjectURL(pngFile);
+await img.decode();
+const canvas = new OffscreenCanvas(img.width, img.height);
+canvas.getContext('2d').drawImage(img, 0, 0);
+const rgba = new Uint8Array(canvas.getContext('2d').getImageData(0, 0, img.width, img.height).data);
+
+// Encode to WZ format (BGRA8888) and compress
+const raw = parser.encodePixels(rgba, img.width, img.height, 2);
+const compressed = parser.compressPng(raw);
+
+// Add as a new blob and create the Canvas node
+blobs.push(compressed);
+properties.push({
+  name: 'newIcon',
+  type: 'Canvas',
+  width: img.width,
+  height: img.height,
+  format: 2,
+  blobIndex: blobs.length - 1,
+  children: [{ name: 'origin', type: 'Vector', x: 0, y: 0 }],
+});
+```
+
+### Build a Complete WZ File
+
+```typescript
+// Start with a parsed directory tree
+const fileInfo = JSON.parse(parser.detectMapleVersion(wzData));
+const directory = fileInfo.directory;
+
+// Modify directory structure
+directory.images.push({ name: 'custom.img', size: 0, checksum: 0, offset: 0 });
+
+// Serialize each image (one blob per image, depth-first order)
+const imageBlobs = [];
+for (const img of directory.images) {
+  const { properties, blobs } = parser.parseImageForEdit(
+    wzData, fileInfo.versionName, img.offset, img.size, fileInfo.versionHash
+  );
+  // ... modify properties/blobs as needed ...
+  imageBlobs.push(parser.buildImage(properties, blobs, fileInfo.versionName));
+}
+
+// Build complete .wz file with desired version and encryption
+const wzOutput = parser.buildFile(directory, imageBlobs, 83, 'gms', false);
+
+// Download
+const blob = new Blob([wzOutput], { type: 'application/octet-stream' });
+const url = URL.createObjectURL(blob);
+const a = document.createElement('a');
+a.href = url;
+a.download = 'Mob.wz';
+a.click();
 ```
